@@ -1,0 +1,2221 @@
+###############################################################################
+# Part of Marvell Yukon/SysKonnect sk98lin Driver for Linux                   #
+###############################################################################
+# Installation script for Marvell Chip based Ethernet Gigabit Cards           #
+# =========================================================================== #
+#                                                                             #
+#  Functions - Global function                                                #
+#                                                                             #
+# Description:                                                                #
+#  This file includes all functions of the install script                     #
+#                                                                             #
+# Returns:                                                                    #
+#       N/A                                                                   #
+# =========================================================================== #
+# Usage:                                                                      #
+#     ./install.sh                                                            #
+#                                                                             #
+# =========================================================================== #
+# COPYRIGHT NOTICE :                                                          #
+#                                                                             #
+# (C)Copyright 2003-2012 Marvell(R).                                          #
+#                                                                             #
+#  This program is free software; you can redistribute it                     # 
+#  and/or modify it under the terms of the GNU General Public                 #
+#  License as published by the Free Software Foundation; either               #
+#  version 2 of the License, or (at your option) any later version.           #
+#                                                                             #
+#                                                                             #
+# WARRANTY DISCLAIMER:                                                        #
+#                                                                             #
+# THIS PROGRAM IS DISTRIBUTED IN THE HOPE THAT IT WILL BE USEFUL, BUT WITHOUT #
+# ANY WARRANTY; WITHOUT EVEN THE IMPLIED WARRANTY OF MERCHANTABILITY OR       #
+# FITNESS FOR A PARTICULAR PURPOSE.                                           #
+#                                                                             #
+#                                                                             #
+###############################################################################
+
+
+# Functions
+###########################################
+
+function message_status ()
+{
+	# Print a status message 
+	# Syntax: message_status STATUS STRING
+	# 	STATUS
+	#		0) FAILED
+	#		1) OK
+	#		2) WARN
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	if test -z "$LINES" -o -z "$COLUMNS" ; then
+		eval `stty size 2>/dev/null | (read L C; \
+		echo LINES=${L:-24} COLUMNS=${C:-80})`
+	fi
+	test $COLUMNS -eq 0 && COLUMNS=80
+	esc=`echo -en "\033"`
+	error="${esc}[1;31m"
+	ok="${esc}[1;32m"
+	warn="${esc}[1;33m"
+	working="${esc}[1;34m"
+	stat=`echo -en "\015${esc}[${COLUMNS}C${esc}[10D"`
+	norm=`echo -en "${esc}[m\017"`
+
+	m_ok="${stat}[${ok}   OK   ${norm}]"
+	m_failed="${stat}[${error} failed ${norm}]"
+	m_warning="${stat}[${warn}  warn  ${norm}]"
+	m_working="${stat}${working}  working${norm}"
+	if [ "$2" != "working" ]; then
+		echo -n " ($2)"
+	fi
+
+	case "$1" in
+	3)	echo -n "$m_working" ;;
+	2)	echo "$m_warning" ;;
+	1)	echo "$m_ok" ;;
+	0)	echo "$m_failed" ;;
+	esac
+
+	return 0;
+}
+
+function make_safe_tmp_dir ()
+{
+	# Generate safe tmp dir
+	# Syntax: make_safe_tmp_dir
+	# Author: mlindner
+	# Returns:
+	#       TMP_DIRECTORY
+
+	fname="Create tmp dir"
+	echo -n $fname
+	message_status 3 "working"
+	BASE_TMP_DIR="/tmp"
+	if ! [ -e "$BASE_TMP_DIR" ]; then
+		BASE_TMP_DIR=`pwd`
+		mkdir ${BASE_TMP_DIR}/tmp
+		BASE_TMP_DIR=`echo ${BASE_TMP_DIR}/tmp`
+	fi	
+
+	TMP_DIR=${BASE_TMP_DIR}/Sk98I`awk 'BEGIN { srand(); for (i=1;i<21;i++) { a=95; while (a > 90 && a < 97) { a=65+int(50*rand())}; printf("%c", a) } }'`
+
+	[ -e "$TMP_DIR" ] && rm -rf $TMP_DIR
+	if [ -e "$TMP_DIR" ]; then 
+		echo
+		echo "My temp dir exists already."
+		echo "This looks like a symlink attack!"
+		echo 
+		echo "*** Aborting"
+		echo
+		exit 1
+	fi
+
+	if [ "$TMP_DIR" = "$BASE_TMP_DIR" -o "$TMP_DIR" = "/" ]; then
+		echo 
+		echo "\"$TMP_DIR\" is an unacceptable value for the temp dir. Please"
+		echo "edit the variable definition for $TMP_DIR and try again."
+		echo
+		echo "*** Aborting"
+		echo
+		exit 1
+	fi
+
+	mkdir $TMP_DIR
+	chmod 700 $TMP_DIR &> /dev/null
+
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "$TMP_DIR"
+}
+
+
+
+function extract_params ()
+{
+	# Extract all given parameters
+	# Syntax:  extract_params
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	if [ $# -eq "0" ];then
+		# Script invoked with no command-line args?
+		return
+	fi
+
+	# Check long options
+	case $1 in
+		--sdk)
+			OPTION_SDK=1
+			shift
+			;;
+		--avb)
+			OPTION_AVB=1
+			shift
+			;;
+		--help)
+			OPTION_HELP=1
+			;;
+		-help)
+			OPTION_HELP=1
+			;;
+	esac
+
+	if [ $OPTION_HELP ]; then
+		return
+	fi
+
+	while getopts ":slchpmv" Option
+		do
+		case $Option in
+			s     ) OPTION_SILENT=1;;
+			l     ) OPTION_LOG=1;;
+			c     ) OPTION_CLEANUP=1;;
+			h     ) OPTION_HELP=1;;
+			p     ) OPTION_PATCH=1;;
+			m     ) OPTION_MAKEFILE=1;;
+			v     ) OPTION_VERSION=1;;
+			*     ) echo "Option $OPTARG ignored";;   # DEFAULT
+		esac
+	done
+
+	if [ "${OPTION_PATCH}" ]; then
+		if [ ! $2 ] || [ ! $3 ]; then
+			echo "install: option requires an argument -- p"
+			echo "Try "install.sh -h" for more information."
+			echo
+			exit
+		fi
+	fi
+
+}
+
+
+
+#################################################################
+# Check functions
+#################################################################
+function check_user_and_tools ()
+{
+	# Check user informations and the existence of defferent tools
+	# Syntax:  check_user_and_tools
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	# Check user id
+	inst_failed="Installation of package failed."
+	fname="Check user id"
+	echo -n $fname
+	if [ `id -u` != 0 ] && [ "$INSTALL_MODE" != "PATCH" ]; then
+		message_status 0 `id -u`
+		echo "+++ Wrong user"  >> $logfile 2>&1
+		echo "You must have root privileges to install the package."
+		cleanup
+		clean
+		exit 1
+	else
+		message_status 1 `id -u`
+	fi
+
+
+	# Check kernel version
+	export KERNEL_VERSION=`uname -r`
+	echo -n "Check kernel version"
+	echo "+++ Kernel version ${KERNEL_VERSION}" >> $logfile 2>&1
+	
+
+	# Check the major version
+	split_maj_kernel_ver=`echo ${KERNEL_VERSION} | cut -d '.' -f 1`
+	if [ $split_maj_kernel_ver != 2 ] && [ $split_maj_kernel_ver != 3 ]; then
+		message_status 0 ${KERNEL_VERSION}
+		kernel_check_failed
+	fi
+
+	KERNEL_MAIN_FAMILY="$split_maj_kernel_ver"
+	split_kernel_ver=`echo ${KERNEL_VERSION} | cut -d '.' -f 2`	
+	if [ $split_maj_kernel_ver == 2 ] && [ $split_kernel_ver != 4 ] && [ $split_kernel_ver != 6 ]; then
+		message_status 0 ${KERNEL_VERSION}
+		kernel_check_failed
+	fi
+
+	# Extract the kernel version
+	KERNEL_FAMILY="$KERNEL_MAIN_FAMILY.$split_kernel_ver"
+	KERNEL_MAJOR_VERSION=`echo ${KERNEL_VERSION} | cut -d '.' -f 2`
+	KERNEL_MINOR_VERSION=`echo ${KERNEL_VERSION} | cut -d '.' -f 3`
+	KERNEL_SUB_VERSION=`echo ${KERNEL_VERSION} | cut -d '.' -f 4`
+
+	# Cleanup the version
+	dot_count=`echo $KERNEL_MINOR_VERSION | grep "-" -c`
+	if [ ${KERNEL_SUB_VERSION} ] && [ $dot_count -eq 0 ]; then
+		split_kernel_ver=`echo ${KERNEL_VERSION} | cut -d '.' -f 4`
+		split_kernel_ver2=`echo $split_kernel_ver | cut -d '-' -f 1`
+		KERNEL_SUB_VERSION=$split_kernel_ver2
+	else
+		split_kernel_ver=`echo ${KERNEL_VERSION} | cut -d '.' -f 3`
+		split_kernel_ver2=`echo $split_kernel_ver | cut -d '-' -f 1`
+		KERNEL_MINOR_VERSION=$split_kernel_ver2
+		KERNEL_SUB_VERSION=""
+	fi
+
+	if [ $KERNEL_FAMILY == 2.4 ]; then
+		message_status 0 ${KERNEL_VERSION}
+		kernel_check_failed
+	fi
+	KERNEL_MINOR_VERSION=`echo ${KERNEL_MINOR_VERSION} | cut -d '_' -f 1`
+	KERNEL_MINOR_VERSION=`echo ${KERNEL_MINOR_VERSION} | cut -d '-' -f 1`
+
+	message_status 1 ${KERNEL_VERSION}
+
+	echo -n "Check kernel symbol file"
+	if [ -f "/proc/ksyms" ]; then
+		SYMSFILE="/proc/ksyms"
+	fi
+	if [ -f "/proc/kallsyms" ]; then
+		SYMSFILE="/proc/kallsyms"
+	fi
+
+	if [ ! $SYMSFILE ]; then
+		if [ -f "/boot/System.map-${KERNEL_VERSION}" ]; then
+			SYMSFILE="/boot/System.map-${KERNEL_VERSION}"
+		fi
+	fi
+	message_status 1 $SYMSFILE
+
+
+
+	# Check machine type
+	fname="Check kernel type"
+	echo -n $fname
+	message_status 3 "working"
+	kernel_machine=`uname -m`
+	SYSTEM_NUMBER_OF_CPUS=1;
+	MAKE_CPU_FLAG=""
+	local no_smp_cpus=0
+
+	# New smp detection (preliminary!)
+	smp_count=`cat /proc/cpuinfo | grep "^processor" -c`
+
+	if [ $smp_count -lt 2 ]; then
+	# check for smp (step2)
+		smp_count=`cat $SYMSFILE | grep smp_call_function$ -c`
+		((smp_count=$smp_count + 1))
+		no_smp_cpus=1
+	fi
+
+	if [ $smp_count -lt 2 ]; then
+	# check for smp (step3)
+		smp_count=`cat $SYMSFILE | grep smp_call_function_R -c`
+		((smp_count=$smp_count + 1))
+		no_smp_cpus=1
+	fi
+
+	if [ $smp_count -lt 2 ]; then
+	# check for smp (step4)
+		smp_count=`cat $SYMSFILE | grep smp_prepare_cpus$ -c`
+		((smp_count=$smp_count + 1))
+		no_smp_cpus=1
+	fi
+	
+	if [ $smp_count -gt 1 ]; then
+		echo -en "\015"
+		echo -n $fname
+		message_status 1 "SMP"
+
+		echo -n "Check number of CPUs"
+		if [ $no_smp_cpus == 1 ]; then
+			SYSTEM_NUMBER_OF_CPUS=1
+			smp_count=1
+		else
+			SYSTEM_NUMBER_OF_CPUS=$smp_count
+			MAKE_CPU_FLAG="-j$SYSTEM_NUMBER_OF_CPUS"
+			smp_count=1
+		fi
+		message_status 1 $SYSTEM_NUMBER_OF_CPUS
+	else
+		smp_count=0
+		echo -en "\015"
+		echo -n $fname
+		message_status 1 "SP"
+	fi
+
+	echo "+++ smp_count=$smp_count" >> $logfile 2>&1
+	echo "+++ cpu_number=$SYSTEM_NUMBER_OF_CPUS" >> $logfile 2>&1
+	echo "+++ kernel_machine=$kernel_machine" >> $logfile 2>&1
+
+	# Check architecture
+	echo -n "Check architecture"
+
+	# Use the arch command at the first
+	arch_out=`uname -p`
+
+	if [ "$arch_out" != "ia64" ] && [ "$arch_out" != "x86_64" ]; then
+		# Probably the x86 architecture...
+		# We have to check some infos for prototype CPU detection
+
+		architecture=`cat /proc/cpuinfo | grep "model name" | cut -d ':' -f 2`
+		if [ $? != 0 ]; then
+			architecture=""
+		fi
+
+		if [ "$architecture" == "" ]; then
+		# Architecture not found... 2nd chance
+			architecture=`cat /proc/cpuinfo | grep "family" | cut -d ':' -f 2`
+			if [ "$architecture" == "" ] && [ "$arch_out" == "" ]; then
+			# Architecture still not found... :(
+				echo "+++ Architecture not found" >> $logfile 2>&1	
+				if [ -z ${SK_ARCH} ]; then
+				message_status 0 "not found"
+				echo "Architecture not detected."
+				echo "Please set the architecture manually."
+				echo "If you know what you are doing and want to set the"
+				echo "architecture, you can do so by setting SK_ARCH system  "
+				echo "variable:"
+				echo "" 
+				echo "  For i386 architecture"
+				echo "    Example: export SK_ARCH=\"i386\""
+				echo "  For ia64 or ia64-2 architecture"
+				echo "    Example: export SK_ARCH=\"ia64\""
+				echo "  For Athlon64, Hammer or Opteron architecture"
+				echo "    Example: export SK_ARCH=\"x86_64\""
+				echo $inst_failed
+				clean
+				exit 1
+				else
+				echo "+++ Architecture set manually: ${SK_ARCH}" >> $logfile 2>&1	
+				message_status 1 "m:${SK_ARCH}"
+				fi
+			else
+				message_status 1 "found"
+			fi
+		else
+			message_status 1 "found"
+		fi
+	else
+		architecture=`echo $arch_out`
+		message_status 1 "found"
+	fi
+
+	# Create the final arch type
+	if [ "$architecture" != "ia64" ] && [ "$architecture" != "x86_64" ]; then
+		architecture=`echo $arch_out`
+	fi
+
+	echo -n "Set architecture"
+	# AMD64, Opteron, Hammer...
+	if [ `echo $architecture | grep -i "Opteron" -c` -gt 0 ]; then ARCH=x86_64; fi
+	if [ `echo $architecture | grep -i "Athlon HX" -c` -gt 0 ]; then ARCH=x86_64; fi
+	if [ `echo $architecture | grep -i "Hammer" -c` -gt 0 ]; then ARCH=x86_64; fi
+	if [ `echo $architecture | grep -i "K8" -c` -gt 0 ]; then ARCH=x86_64; fi
+	if [ `echo $architecture | grep -i " 15" -c` -gt 0 ]; then ARCH=x86_64; fi
+	if [ `echo $architecture | grep -i "AMD Athlon(tm) 64" -c` -gt 0 ]; then ARCH=x86_64; fi
+	if [ `echo $architecture | grep -i "x86_64" -c` -gt 0 ]; then ARCH=x86_64; fi
+
+	# IA-64, IA-64 2...
+	if [ `echo $architecture | grep -i "ia-64" -c` -gt 0 ]; then ARCH=ia64; fi
+	if [ `echo $architecture | grep -i "ia64" -c` -gt 0 ]; then ARCH=ia64; fi
+	if [ `echo $architecture | grep -i "itanium" -c` -gt 0 ]; then ARCH=ia64; fi
+
+	# PPC
+	if [ `echo $architecture | grep -i "ppc" -c` -gt 0 ]; then ARCH=ppc; fi
+
+	if [ -z ${SK_ARCH} ]; then
+		if [ "$ARCH" == "" ]; then
+			ARCH=`echo i386`
+		fi
+	else
+		ARCH=`echo ${SK_ARCH}`
+	fi
+	echo "+++ Architecture: $ARCH" >> $logfile 2>&1
+	message_status 1 "$ARCH"
+
+
+	# Check gcc
+	echo -n "Check compiler"
+	local gcccheck=`which gcc | wc -l - | cut -d ' ' -f 1`
+	if [ ${gcccheck} -gt 0 ]; then
+		message_status 1 `which gcc`
+	else
+		message_status 0 "not found"
+		echo "+++ Compiler not found" >> $logfile 2>&1	
+		echo "You have to install the gcc compiler."
+		echo $inst_failed
+		clean
+		exit
+	fi
+
+
+	# Check mcmodel flags
+	echo -n "Check mcmodel flags"
+	echo "int main(void) { int i; return; }" >> $TMP_DIR/test.c
+	`gcc -mcmodel=kernel $TMP_DIR/test.c -o $TMP_DIR/out.o &> /dev/null`
+	if [ $? -gt 0 ]; then
+		message_status 1 "none"
+	else
+		if [ "$ARCH" == "x86_64" ]; then
+			export MCMODEL="-mcmodel=kernel"
+		fi
+		if [ "$MCMODEL" == "" ]; then
+			message_status 1 "none"
+		else
+			message_status 1 "kernel"
+		fi
+	fi
+
+	# Check module support
+	echo -n "Check module support"
+	if [ `which insmod` ]; then
+		insmod_bin=`which insmod`
+		message_status 1 $insmod_bin
+	else
+		if [ -e /sbin/insmod ]; then
+			insmod_bin="/sbin/insmod"
+			message_status 1 $insmod_bin
+		else
+			if [ -e /usr/sbin/insmod ]; then
+				insmod_bin=`echo "/usr/sbin/insmod"`
+				message_status 1 $insmod_bin
+			else
+				message_status 0 "not found"
+				echo "+++ Insmod not found" >> $logfile 2>&1	
+				inst_failed "You have to install the modutils package."
+			fi
+		fi
+	fi
+
+
+	# Check make 
+	echo -n "Check make"
+	if [ `which make` ]; then
+		message_status 1 `which make`
+	else
+		message_status 0 "not found"
+		echo "+++ Make not found" >> $logfile 2>&1	
+		inst_failed "You have to install the make package."
+	fi
+}
+
+
+function check_highmem ()
+{
+
+	# Check highmem
+	echo -n "Check the mem address space"
+	if [ `cat $SYMSFILE | grep "kmap_high" -c` -gt 0 ]; then
+		if [ `cat /proc/meminfo  | grep Hugepagesize | grep 2048 -wc` -gt 0 ]; then
+			message_status 1 "highmem64"
+			HIGHMEM=2
+		else
+			message_status 1 "highmem"
+			HIGHMEM=1
+		fi
+	else
+		message_status 1 "lowmem"
+		HIGHMEM=0
+	fi
+
+	# Set the mem address space
+	if [ $HIGHMEM == 2 ]; then
+	# Hugemem enabled... Turn hugemem on.
+		sed -e 's/# CONFIG_HIGHMEM64G is not set/CONFIG_HIGHMEM64G=y/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/CONFIG_HIGHMEM4G=y/# CONFIG_HIGHMEM4G is not set/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+		sed -e 's/CONFIG_NOHIGHMEM=y/# CONFIG_NOHIGHMEM is not set/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/# CONFIG_HIGHMEM is not set/CONFIG_HIGHMEM=y/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+	fi
+
+	if [ $HIGHMEM == 1 ]; then
+	# Highmem enabled... Turn highmen on.
+		sed -e 's/# CONFIG_HIGHMEM4G is not set/CONFIG_HIGHMEM4G=y/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/CONFIG_HIGHMEM64G=y/# CONFIG_HIGHMEM64G is not set/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+		sed -e 's/CONFIG_NOHIGHMEM=y/# CONFIG_NOHIGHMEM is not set/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/# CONFIG_HIGHMEM is not set/CONFIG_HIGHMEM=y/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+	fi
+
+		
+	if [ $HIGHMEM == 0 ]; then
+	# Set highmem back
+		sed -e 's/CONFIG_HIGHMEM4G=y/# CONFIG_HIGHMEM4G is not set/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/CONFIG_HIGHMEM64G=y/# CONFIG_HIGHMEM64G is not set/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+		sed -e 's/# CONFIG_NOHIGHMEM is not set/CONFIG_NOHIGHMEM=y/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/CONFIG_HIGHMEM=y/# CONFIG_HIGHMEM is not set/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+	fi
+}
+
+
+function check_iommu ()
+{
+	# Check and change the mmu values
+	# Syntax: check_iommu
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+
+	echo -n "Change IOMMU"
+
+	if [ `cat ${SYMSFILE} | grep -c swio` -gt 1 ]; then
+		sed -e 's/# CONFIG_GART_IOMMU is not set/CONFIG_GART_IOMMU=y/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/CONFIG_DUMMY_IOMMU=y/# CONFIG_DUMMY_IOMMU is not set/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+		sed -e 's/# CONFIG_SWIOTLB is not set/CONFIG_SWIOTLB=y/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+
+		message_status 1 "enabled"
+	else
+		sed -e 's/CONFIG_GART_IOMMU=y/# CONFIG_GART_IOMMU is not set\nCONFIG_DUMMY_IOMMU=y/' \
+			${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+		sed -e 's/CONFIG_SWIOTLB=y/# CONFIG_SWIOTLB is not set/' \
+			${TMP_DIR}/newconfig2 &> ${TMP_DIR}/newconfig
+		message_status 1 "disabled"
+	fi
+}
+
+
+function check_config ()
+{
+	# Check and change the config file
+	# Syntax: check_config
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	# Backup old .config file
+	fname="Copy and check .config file"
+	echo -n $fname
+	message_status 3 "working"
+
+	# Check config
+	cp ${KERNEL_SOURCE}/.config ${TMP_DIR}/config
+	cp ${KERNEL_SOURCE}/.config ${TMP_DIR}/config-backup
+	rm -rf ${TMP_DIR}/newconfig &> /dev/null
+	if [ $smp_count == 1 ]; then
+		if [ `grep CONFIG_NR_CPUS ${TMP_DIR}/config -c` -gt "0" ]; then
+			sed -e 's/# CONFIG_NR_CPUS/CONFIG_NR_CPUS=8/' \
+				${TMP_DIR}/config \
+				>> ${TMP_DIR}/newconfig
+			cp ${TMP_DIR}/newconfig ${TMP_DIR}/config
+		else
+			sed -e 's/# CONFIG_SMP is not set/CONFIG_SMP=y/' \
+				${TMP_DIR}/config \
+				>> ${TMP_DIR}/newconfig
+		fi
+	else
+		sed -e 's/CONFIG_SMP=y/# CONFIG_SMP is not set/' \
+			${TMP_DIR}/config >> ${TMP_DIR}/newconfig
+	fi
+
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "done"
+
+	check_highmem
+	check_iommu
+		
+	# Set version management back
+	sed -e 's/CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' \
+		${TMP_DIR}/newconfig &> ${TMP_DIR}/newconfig2
+
+
+	echo -n "Create new .config file"
+	mv ${TMP_DIR}/newconfig2 ${TMP_DIR}/newconfig
+	cp ${TMP_DIR}/newconfig ${KERNEL_SOURCE}/.config
+	message_status 1 "done"
+
+
+}
+
+function disconnect_all_devices ()
+{
+	# Disconnect all devices
+	# Syntax:  disconnect_all_devices
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	echo -n "Disconnect devices: "
+	if [ `which ethtool | wc -l ` -gt 0 ]; then
+	# Use ethtool 
+		for device in `ifconfig -a | grep eth | cut -d ' ' -f 1`; do
+			if [ `ethtool -i $device | grep sk98lin | wc -l` -gt 0 ]; then
+				echo -n "$device ";
+				ifconfig $device down
+			fi
+		done;
+		message_status 1 "done"
+		return
+	fi
+
+
+	privcount=`echo 1`;
+
+	# Get the iomem data for sk98lin devices
+	for iomem in `cat /proc/iomem |grep sk98lin`; do
+		if [ $privcount == 1 ]; then
+			iomem=`echo $iomem | cut -d '-' -f 1`
+			iomem=`echo $iomem-`
+			if [ `ifconfig | grep $iomem | wc -c` -gt 0 ]; then
+				# Device found... Print the data and shutdown
+				for mydev in `ifconfig`; do
+					if [ `echo $mydev | grep eth  | wc -c` -gt 0 ]; then
+					# Save the device
+						useddevice=$mydev;
+					fi
+
+					if [ `echo $mydev | grep $iomem | wc -c` -gt 0 ]; then
+						echo -n $useddevice;
+						ifconfig $useddevice down
+					fi
+
+				done
+			fi
+
+			privcount=`echo -1`;
+		else
+			(( privcount=$privcount+1 ));
+		fi
+	done
+
+	message_status 1 "done"
+}
+
+function check_kernel_informations ()
+{
+	# Check kernel and module informations
+	# Syntax:  check_kernel_informations
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+
+	# Check gcc and kernel version
+	GCCNAME=`echo gcc`
+	gcc_version=`gcc -v 2>&1 | tail -1`
+	gcc_version=`echo $gcc_version | cut -d ' ' -f 3`
+	kernel_gcc_version=`cat /proc/version | sed -e "s/^.*gcc version//g"`
+	kernel_gcc_version=`echo $kernel_gcc_version | sed -e "s/)//g"`
+	kernel_gcc_version=`echo $kernel_gcc_version | cut -d ' ' -f 1`
+	echo -n "Check kernel gcc version (${kernel_gcc_version})"
+
+	if [ $kernel_gcc_version != $gcc_version ]; then
+		othergccfound=`echo 0`
+		PathOfGcc=`which $GCCNAME | sed -e 's/\/gcc//'`
+		AllGccInDir=`ls -1 $PathOfGcc | grep ^$GCCNAME`
+
+		for currGcc in $AllGccInDir
+		do
+			if [ $othergccfound -lt 1 ]; then
+				version=`$PathOfGcc/$currGcc -v 2>&1 | tail -1 | awk '{print $3}'`
+				# echo "+++ Version of $currGcc is $version +++"
+				if [ $kernel_gcc_version == $version ]; then
+					GCCNAME=`echo $currGcc`
+					othergccfound=`echo 1`
+				fi
+			fi
+		done
+
+		if [ $othergccfound -lt 1 ]; then
+			message_status 0 "Kernel:$kernel_gcc_version != gcc:$gcc_version"
+			echo "+++ Mismatch!!! Kernel:$kernel_gcc_version != gcc:$gcc_version" >> $logfile 2>&1
+			if [ -z ${IGNORE_CC_MISMATCH} ]; then \
+
+			echo "There is a version mismatch between the compiler that was used"
+			echo "to build the current running kernel and the compiler which you"
+			echo "intend to compile the kernel module with. In most of the cases,"
+			echo "this is no problem, but there are cases in which this compiler-"
+			echo "mismatch leads to unexpected system crashes"
+			echo " "
+			echo "If you know what you are doing and want to override this   "; \
+			echo "check, you can do so by setting IGNORE_CC_MISMATCH system  "; \
+			echo "variable:                                                  "; \
+			echo "    Example: export IGNORE_CC_MISMATCH="1"                 "; \
+			echo $inst_failed
+			cleanup
+			clean
+			exit 1
+			fi
+		else
+			message_status 1 "use $GCCNAME"
+		fi		
+	else
+		message_status 1 "Kernel:$kernel_gcc_version == gcc:$gcc_version"
+	fi
+
+	# Check the kernel version for AVB support
+	if ([ $AVB_SUPPORT == "1" ] && [ ${KERNEL_FAMILY} == 2.6 ] && [ ${KERNEL_MINOR_VERSION} -lt 38 ]); then
+		echo
+		echo "AVB: Kernel version not supported! Please use Linux Kernel >= 2.6.38"
+		echo
+
+		cleanup
+		clean
+		exit 1
+	fi
+	# Check the driver availability
+	echo -n "Check $drv_name driver availability"
+	check_sk98lin=`lsmod | grep $drv_name -c` 
+	if [ $check_sk98lin != 1 ]; then
+		message_status 1 "not loaded"
+	else
+		if [ -z ${IGNORE_SKAVAIL_CHECK} ]; then 
+			if [ "$user_sel" == "installation" ]
+			then
+				message_status 1 "loaded"
+			else
+				echo "+++ Driver loaded. OK" >> $logfile 2>&1
+				message_status 1 "loaded"
+			fi
+
+			if [ -z ${REMOVE_SKDEVICE} ] && [ "$user_sel" != "installation" ]; then 
+				echo
+				echo "Driver $drv_name loaded. Please remove the driver with rmmod."
+				echo "If you want override this check, you can do so by setting   "
+				echo "IGNORE_SKAVAIL_CHECK:"; 
+				echo "    Example: export IGNORE_SKAVAIL_CHECK="1"             "
+				echo
+				echo "If you want to remove the devices and the driver automatically,"
+				echo "you can do so by setting REMOVE_SKDEVICE:"
+				echo "    Example: export REMOVE_SKDEVICE="1"             "
+				echo
+				echo "+++ Driver loaded. ERROR!" >> $logfile 2>&1
+				echo $inst_failed
+				cleanup
+				clean
+				exit 1
+			fi
+			if [ "$INSTALL_MODE" != "MAKEFILE" ]; then
+				disconnect_all_devices
+
+				echo -n "Remove driver"
+				rmmod $drv_name &> /dev/null
+				message_status 1 "done"
+			fi
+		else
+			message_status 2 "loaded"
+		fi
+	fi
+
+
+	# Check header files
+	echo -n "Check kernel header files"
+	if [ -d /lib/modules/`uname -r`/build/include/linux/ ]; then
+		# Build directory found. We'll use it...
+		if [ -d /lib/modules/`uname -r`/source/include/linux/ ]; then
+		# source directory found. We'll use it...
+			export KERNEL_HEADER="/lib/modules/`uname -r`/source/include";
+			export KERNEL_SOURCE="/lib/modules/`uname -r`/source";
+		else
+			# source directory not found. We'll use Build directory
+			# instead of it...
+			export KERNEL_HEADER="/lib/modules/`uname -r`/build/include";
+			export KERNEL_SOURCE="/lib/modules/`uname -r`/build";
+		fi
+		message_status 1 "${KERNEL_SOURCE}"
+
+		export KERNEL_BUILD_OUTPUT="/lib/modules/`uname -r`/build";
+	else
+		if [ -d /usr/src/linux/include/linux/ ]; then
+		# /usr/src/linux found. Use it...
+			message_status 1 "/usr/src/linux"
+			export KERNEL_HEADER="/usr/src/linux/include";
+			export KERNEL_SOURCE="/usr/src/linux";
+		else
+		# Nothing found... Perform some checks
+			if [ -d /usr/src/linux-${KERNEL_VERSION}/include/linux/ ]; then
+				message_status 1 "/usr/src/linux-${KERNEL_VERSION}"
+				export KERNEL_HEADER="/usr/src/linux-${KERNEL_VERSION}/include";
+				export KERNEL_SOURCE="/usr/src/linux-${KERNEL_VERSION}";
+			else
+				kernel_check_dir="linux-$KERNEL_FAMILY"
+				if [ -d /usr/src/$kernel_check_dir/include/linux/ ]; then
+					message_status 1 "/usr/src/$kernel_check_dir"
+					export KERNEL_HEADER="/usr/src/$kernel_check_dir/include";
+					export KERNEL_SOURCE="/usr/src/$kernel_check_dir";
+				else
+					# Get info from the lib dir
+					if [ -d /lib/modules/${KERNEL_VERSION}/source/include/linux/ ]; then
+						message_status 1 "/lib/modules/${KERNEL_VERSION}/source"
+						export KERNEL_HEADER="/lib/modules/${KERNEL_VERSION}/source/include";
+						export KERNEL_SOURCE="/lib/modules/${KERNEL_VERSION}/source";
+					else
+						message_status 0 "not found"
+						echo "Kernel header not found. Please install the linux header files "
+						echo "development package or create a symbolic link from the "
+						echo "/usr/src/KERNEL_VERSION directory to linux"
+						echo "     Example: ln -s /usr/src/KERNEL_VERSION /usr/src/linux"
+						echo ""
+						echo "+++ Kernel header not found. ln -s /usr/src/KERNEL_VERSION?" >> $logfile 2>&1
+						echo $inst_failed
+						cleanup
+						clean
+						exit 1
+					fi
+				fi
+	   		fi
+		fi
+	fi
+
+	# Bugfix for AVB
+	if [ $AVB_SUPPORT == "1" ]; then
+		echo -n "Check autoconf.h"
+		if [ ! -f "$KERNEL_HEADER/linux/autoconf.h" ]; then
+			if [ "$INSTALL_MODE" == "MAKEFILE" ]; then
+			# Makefile generation
+				message_status 0 "not found"
+				echo
+				echo "autoconf.h not found! Please search for the autoconf.h file in the " 
+				echo "Kernel header directory and copy the file into the include directory:"
+				echo "   Example:"
+				echo "      # cd $KERNEL_SOURCE"
+				echo "      # cp \`find . -name autoconf.h\` $KERNEL_HEADER/linux" 
+				echo
+
+				cleanup
+				clean
+				exit 1
+			else
+				# Install
+				message_status 2 "not found"
+				echo -n "Copy autoconf.h"
+				cd $KERNEL_HEADER
+				cp `find . -name autoconf.h` $KERNEL_HEADER/linux
+				cd -
+			fi
+		fi
+		message_status 1 "done"
+	fi
+
+
+
+	# Check the driver location
+	echo -n "Check driver location"
+	if [ -d $KERNEL_SOURCE/drivers/net/ethernet/ ]; then
+		KERNEL_MODULE_LOC=$KERNEL_SOURCE/drivers/net/ethernet/marvell
+		ALT_MODULE_LOC=/lib/modules/`uname -r`/kernel/drivers/net/ethernet/marvell
+		OWN_MODULE_LOC=/lib/modules/`uname -r`/kernel/drivers/net/ethernet/marvell
+	else
+		KERNEL_MODULE_LOC=$KERNEL_SOURCE/drivers/net/sk98lin
+		ALT_MODULE_LOC=/lib/modules/`uname -r`/kernel/drivers/net
+		OWN_MODULE_LOC=/lib/modules/`uname -r`/kernel/drivers/net/${drv_name}
+	fi
+	message_status 1 "$KERNEL_MODULE_LOC"
+}
+
+function check_modpost ()
+{
+	# Check if modpost is available
+	# Syntax:  check_modpost
+	# Author: marcusr
+	# Returns:
+	#       N/A
+
+	if [ ${KERNEL_FAMILY} == 2.4 ]; then
+	    return
+	fi
+
+	echo -n "Check modpost availability"
+
+	if [ -f ${KERNEL_SOURCE}/scripts/mod/modpost ]; then
+		echo "+++ modpost available" >> $logfile 2>&1
+		message_status 1 "available"
+		cd $working_dir
+	else
+		message_status 2 "not available"
+
+		if [ -f ${KERNEL_SOURCE}/scripts/mod/modpost.c ]; then
+			# Rebuild kernel scripts
+			fname="Rebuild kernel scripts"
+			echo -n $fname
+			message_status 3 "working"
+			cd ${KERNEL_SOURCE}
+			make scripts &> /dev/null
+			echo -en "\015"
+			echo -n $fname
+			message_status 1 "done"
+			cd $working_dir
+		fi
+	fi
+
+
+	if [ ! -f ${KERNEL_SOURCE}/scripts/mod/modpost ]; then
+		if [ -f ${KERNEL_SOURCE}/scripts/mod/modpost.c ]; then
+			echo "+++ modpost not available" >> $logfile 2>&1
+
+			echo ""
+			echo "The kernel's modpost utility is not available. As the source code"
+			echo "for the utility is available in your current installed linux kernel"
+			echo "source tree, you can compile the utility for your own."
+			echo ""
+			echo "To do so, please follow the description below:"
+			echo "(Please read the next lines before you execute them!)"
+			echo "[1] Change to /usr/src/linux"
+			echo "[2] Call make (this begins to create a new linux kernel)"
+			echo "[3] Take a look at the output: After a few seconds the modpost utility"
+			echo "    will be compiled"
+			echo "[4] Now interrupt the make process by pressing ctrl-c"
+			echo ""
+			echo "The modpost utility now is created. You can check this by taking a look"
+			echo "at /usr/src/linux/scripts/mod. Here you should find a file modpost now."
+			echo ""
+			echo "If you are finished recall install.sh again. That's it."
+			echo""
+		else
+			echo "+++ modpost and its sources not available" >> $logfile 2>&1
+
+			echo ""
+			echo "The kernel's modpost utility is not available. Addtionally we did not"
+			echo "even find the source code for the utility. For this situation it exists"
+			echo "only one reason: your kernel source tree is corrupted."
+			echo ""
+			echo "You may continue to check for the modpost.c file below the directory"
+			echo "/usr/src/linux/scripts/mod. Normally you should find here also a binary"
+			echo "called modpost. Both seem to be missing."
+			echo ""
+			echo "Please contact your distribution vendor or download a kernel from"
+			echo "kernel.org to build your own kernel manually. It then will contain the"
+			echo "missing utility."
+			echo ""
+		fi
+		cleanup
+		exit 1
+	fi
+}
+
+function check_kernel_functions ()
+{
+	# Check some kernel functions and insert a function if
+	# available in the kernel
+	# Syntax: check_kernel_functions
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	fname="Check kernel functions"
+	echo -n $fname
+	message_status 3 "working"
+
+	if [ "$KERNEL_FAMILY" ==  2.4 ]; then
+		if [ "$KERNEL_MINOR_VERSION" -lt  20 ]; then
+		# Prepare driver for a new skb_padto function
+		# Pads up a buffer to ensure the trailing bytes exist and are
+		# blanked. If the buffer already contains sufficient data it
+		# is untouched. Returns the buffer, which may be a replacement
+		# for the original, or NULL for out of memory - in which case
+		# the original buffer is still freed.
+		#
+		# A similar function is already in the kernel (skb_padto()) but we
+		# need a new one. The driver is still used by older kernels without
+		# the new kernel function.
+
+		sed -e 's/static void	FreeResources(struct SK_NET_DEVICE \*dev);/\
+static struct sk_buff *skb_padto(struct sk_buff *skb,unsigned int len)\
+{\
+\#ifndef likely\
+\#define __builtin_expect(x, expected_value) (x)\
+\#define likely(x) __builtin_expect((x),1)\
+\#endif\
+struct sk_buff *nskb;\
+unsigned int size = skb->len + skb->data_len;\
+if(likely(size >= len)) return skb;\
+if(skb_tailroom(skb) >= len-size) { memset(skb->data+skb->len, 0, len-size);return skb;}\
+nskb = skb_copy_expand(skb,skb_headroom(skb),skb_tailroom(skb) + len-size,GFP_ATOMIC);\
+kfree_skb(skb);\
+if(nskb) memset(nskb->data+nskb->len, 0, len-size);\
+return skb;\
+}\
+\
+static void	FreeResources(struct SK_NET_DEVICE \*dev);/' \
+			${TMP_DIR}/all/skge.c &> ${TMP_DIR}/all/skge.c2
+
+			mv ${TMP_DIR}/all/skge.c2 ${TMP_DIR}/all/skge.c
+ 			changes=`echo $changes skb_padto`;
+		fi
+	fi
+
+	# Change sky2.c on fedora core 2
+	if [ -e "/etc/fedora-release" ]; then
+		if [ `grep -wc "Fedora Core release 2" /etc/fedora-release` -gt 0 ]; then
+			# fedora core 2
+			sed -e 's/	dma_addr_t     pPhysMemAddr/	dma64_addr_t     pPhysMemAddr/' ${TMP_DIR}/all/sky2.c &> ${TMP_DIR}/all/sky2.c2
+			mv ${TMP_DIR}/all/sky2.c2 ${TMP_DIR}/all/sky2.c
+ 			changes=`echo $changes dma64_addr_t`;
+		fi
+	fi
+
+	# Change for netdump (kernel fix)
+	if [ ${KERNEL_FAMILY} == 2.4 ] &&
+		[ `grep netdump_mode ${KERNEL_SOURCE}/kernel/panic.c -c` == 0 ]; then
+ 		changes=`echo $changes netdump`;
+		sed -e 's/#define SK_NETDUMP_POLL/#undef SK_NETDUMP_POLL/' ${TMP_DIR}/all/h/skdrv2nd.h &> ${TMP_DIR}/all/h/skdrv2nd.h2
+		mv ${TMP_DIR}/all/h/skdrv2nd.h2 ${TMP_DIR}/all/h/skdrv2nd.h
+	fi
+
+	# Check the tso_size
+	if [ ${KERNEL_FAMILY} == 2.6 ] && [ ${KERNEL_MINOR_VERSION} -lt 18 ]; then
+		if [ `grep -wc "gso_size" ${KERNEL_SOURCE}/include/linux/skbuff.h` -gt 0 ]; then
+			# Change tso_size to gso_size
+			sed -e 's/tso_size/gso_size/' ${TMP_DIR}/all/sky2.c &> ${TMP_DIR}/all/sky2.c2
+			mv ${TMP_DIR}/all/sky2.c2 ${TMP_DIR}/all/sky2.c
+ 			changes=`echo $changes gso_size`;
+		fi
+	fi
+
+	if [ "$changes" == "" ]; then
+		changes="nothing"
+	fi
+
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "Changed: $changes"
+}
+
+function generate_sources_version ()
+{
+	# Check and generate a correct version.h file
+	# Syntax: generate_sources_version
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	# We have to "make prepare" if version sill not available
+	if [ ! -f ${KERNEL_SOURCE}/include/linux/version.h ]; then
+		fname="Execute: make prepare"
+		echo -n $fname
+		message_status 3 "working"
+		cd ${KERNEL_SOURCE}
+		make prepare &> /dev/null
+		echo -en "\015"
+		echo -n $fname
+		message_status 1 "done"
+	fi
+
+	# Check header version
+	echo -n "Check kernel header version"
+	if [ -f ${KERNEL_SOURCE}/include/linux/utsrelease.h ]; then
+		check_header="${KERNEL_HEADER}/linux/utsrelease.h"
+	else
+		check_header="${KERNEL_HEADER}/linux/version.h"
+	fi
+
+	header_count=`grep -c RELEASE $check_header`
+
+	if [ $header_count != 1 ]; then
+		message_status 2 "not recognized"
+	else	
+		header_version=`grep RELEASE $check_header`
+		header_version=`echo $header_version | cut -d '"' -f 2`
+		header_version=`echo $header_version | cut -d '-' -f 1`
+
+		check_kernel_version=`echo ${KERNEL_VERSION} | cut -d '-' -f 1`
+
+		if [ $header_version != ${check_kernel_version} ]; then
+			if [ -z ${IGNORE_HEADER_MISMATCH} ]; then
+				if [ "$user_sel" == "installation" ]
+				then
+					message_status 1 "Kernel:${check_kernel_version} != Header:$header_version"
+					echo -n "Save old version"
+					cp $check_header ./
+					message_status 1 "saved"	
+
+					echo -n "Check and create new version"
+					tmp_version=`cat $check_header`
+					read_and_change_version_file <<INPUTSTART
+$tmp_version
+INPUTSTART
+
+					message_status 1 "created"
+
+					# Make dependency
+#					make_dep
+
+				else
+					message_status 0 "Kernel:${check_kernel_version} != Header:$header_version"
+					echo "+++ Kernel:${check_kernel_version} != Header:$header_version" >> $logfile 2>&1
+					header_check_failed
+				fi
+			fi
+		else
+			message_status 1 "Kernel:${check_kernel_version} == Header:$header_version"
+		fi
+	fi
+}
+
+
+#################################################################
+# Messages functions
+#################################################################
+function header_check_failed ()
+{
+	# Print a error message and exit 
+	# Syntax: header_check_failed
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	echo "There is a mismatch between the current running kernel and"
+	echo "the header files the kernel module will be compiled with."
+	echo " "
+	echo "For instance, it might be, that you run kernel version"
+	echo "2.6.20, but the header files the kernel module will be"
+	echo "compiled with refer to kernel version 2.6.21"
+	echo 
+	echo "Due to this mismatch, you will not be able to load the "
+	echo "driver without the force option (insmod -f $drv_name) after"
+	echo "its compilation finished."
+	echo " "
+	echo "This problem can be resolved by overwriting the current"
+	echo "include/version.h (which corresponds to another kernel "
+	echo "version), with the include/version.h of the kernel version"
+	echo "currently running."
+	echo " "
+ 	echo "BEWARE: OVERWRITE THE FILE ONLY IF YOU HAVE REALLY THE "
+	echo "CORRECT HEADER FILE CORRESPONDING TO THE CURRENT RUNNING"
+	echo " "
+	echo "If you don't have the same kernel version, please install  "; \
+	echo "the sources or a new kernel. It's not possible to mix      "; \
+	echo "different kernel versions!                                 "; \
+	echo "                                                           "; \
+	echo "If you know what you are doing and want to override this   "; \
+	echo "check, you can do so by setting IGNORE_HEADER_MISMATCH     "; \
+	echo "system variable:                                           "; \
+	echo "    Example: export IGNORE_HEADER_MISMATCH="1"             "; \
+	echo "                                                           "; \
+	echo "or change the file ${KERNEL_HEADER}/linux/version.h,       "; \
+	echo "remove the define UTS_RELEASE line and insert:             "; \
+	echo "#define UTS_RELEASE \"${KERNEL_VERSION}\"                  "; \
+	echo "                                                           "; \
+	echo "    Your kernel version: ${KERNEL_VERSION}                 "; \
+	echo "    Your header version: $header_version                   "; \
+	echo $inst_failed
+	echo "                                                           "; \
+	cleanup
+	clean
+	exit
+}
+
+function kernel_check_failed ()
+{
+	# Print kernel error informations
+	# Syntax:  kernel_check_failed
+	# Author: mlindner
+	# Returns:
+
+	echo "Kernel version unsupported."
+	echo "This driver was developed for the kernel family 2.6.x."
+	echo "and kernel 3.0.x. If you are still using a old version "
+	echo "of the kernel, please update to the newest version from"
+	echo "ftp://ftp.kernel.org"
+	echo "+++ Kernel version unsupported" >> $logfile 2>&1
+	echo $inst_failed
+	echo
+	cleanup
+	clean
+	exit
+}
+
+#################################################################
+# Common kernel functions
+#################################################################
+function check_driver ()
+{
+	# Copy the news sources and check the driver
+	# Syntax:  check_driver
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	echo -n "Copy driver man page into /usr/share/man/man4/"
+	rm -rf /usr/share/man/man4/sk98lin.4 &> /dev/null
+	rm -rf /usr/share/man/man4/sk98lin.4.gz &> /dev/null
+	cp -f sk98lin.4 /usr/share/man/man4/ &> /dev/null
+	gzip /usr/share/man/man4/sk98lin.4 &> /dev/null
+	message_status 1 "done"
+
+	# Check the driver
+	fname="Check the driver"
+	echo -n $fname
+	message_status 3 "working"
+
+	echo "Check the driver" >> $logfile 2>&1
+	echo "====================================" >> $logfile 2>&1
+	sync
+	sleep 1
+	sync
+	if [ ${KERNEL_FAMILY} == 2.4 ]; then
+		$insmod_bin ./$drv_name.o >> $logfile 2>&1
+	else
+		$insmod_bin ./$drv_name.ko >> $logfile 2>&1
+	fi
+	insmod_count=`lsmod | grep $drv_name -c`
+
+	if [ $insmod_count -lt 1 ]; then
+		echo -en "\015"
+		echo -n $fname
+		message_status 0 "error"	
+		echo "An error has occurred during the check proces which prevented  "; \
+		echo "the installation from completing.                              "; \
+		echo "It's not possible to build a standalone $drv_name driver on this "; \
+		echo "host. The kernel don't export a neccesary symbols for the      "; \
+		echo "device driver and we aren't able to load the driver.           "; \
+		echo 
+		echo "Please compile the kernel and the driver manually.             "; \
+		echo "The new driver has been installed in the /usr/src/linux        "; \
+		echo "directory.                                                     "; \
+		echo 
+		echo "   1.) Go to the directory /usr/src/linux                      "; \
+		echo "   2.) For the console mode, run the command: make menuconfig  "; \
+		echo "   3.) Select the options you want to compile into the kernel  "; \
+		echo "   4.) Select the menu \"Network Device Support\"              "; \
+		echo "   5.) Select \"Ethernet (1000 Mbit)\".                        "; \
+		echo "   5.) Mark \"Marvell Yukon/SysKonnect SK-98xx/SK-95xx Gigabit "; \
+		echo "       Ethernet Adapter support\" with (M)                     "; \
+		echo "   6.) Execute the command:                                    "; \
+		echo "           make dep clean bzImage modules modules_install      "; \
+		echo "   7.) Install the new kernel                                  "; \
+
+		echo "+++ Check error. Insmod error!" >> $logfile 2>&1
+		echo $inst_failed
+		return 1
+	else
+		echo -en "\015"
+		echo -n $fname
+		message_status 1 "done"
+	fi
+
+
+	# Check driver directory
+	if [ ! -e ${OWN_MODULE_LOC} ]; then
+		fname="Create kernel modules driver directory"
+		echo -n $fname
+		message_status 3 "working"
+		mkdir ${OWN_MODULE_LOC}
+		echo -en "\015"
+		echo -n $fname
+		message_status 1 "done"
+	fi
+
+	# Delete old driver
+	fname="Delete old driver"
+	echo -n $fname
+	message_status 3 "working"
+	rm -rf ${OWN_MODULE_LOC}/sk98lin.*
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "done"
+
+	
+	# Copy the driver
+	fname="Copying driver"
+	echo -n $fname
+	message_status 3 "working"
+	if [ ${KERNEL_FAMILY} == 2.4 ]; then
+		cp $drv_name.o ${OWN_MODULE_LOC}/
+	else
+		cp $drv_name.ko ${OWN_MODULE_LOC}/
+	fi
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "done"
+}
+
+
+function copy_driver ()
+{
+	# Copy driver
+	# Syntax: copy_driver
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+
+	if [ $SDK_SUPPORT == "1" ]; then
+		fname="Loading kernel flash module"
+		echo -n $fname
+		message_status 3 "working"
+
+		modprobe firmware_class &> /dev/null
+		if $( lsmod | grep -q "firmware_class"); then
+			echo -en "\015"
+			echo -n $fname
+			message_status 1 "done"
+		else
+			echo -en "\015"
+			echo -n $fname
+			message_status 0 "error"
+		fi
+	fi
+
+	# Copy sources and check the new driver (only if silent mode disabled)
+	if [ ! "${OPTION_SILENT}" ]; then
+		check_driver
+		retvar=$?
+		handle_alt_driver
+		make_depmod
+
+		cleanup
+		clean
+
+		if [ $retvar != 1 ]; then
+			echo "All done. Driver installed and loaded."
+			echo "To load the module manually, proceed as follows:"
+			echo "      Enter \"modprobe $drv_name\""
+			echo 
+			echo "                                                     Have fun..."
+		fi
+
+	else
+		if [ ${SK_RPM_BUILD_ROOT} ]; then
+			cp $drv_name.o ${SK_RPM_BUILD_ROOT}
+			cp $drv_name.ko ${SK_RPM_BUILD_ROOT}
+		fi
+		cp $drv_name.o $working_dir
+		cp $drv_name.ko $working_dir
+		cleanup
+		echo "All done. Driver compiled."
+	fi
+}
+
+function make_depmod ()
+{
+	# Make depmod
+	# Syntax: perform depmod
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	# Make dependency
+	fname="Make dependency"
+	echo -n $fname
+	message_status 3 "working"
+	depmod -a &> /dev/null
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "done"
+}
+
+function make_dep ()
+{
+	# Execute make dep
+	# Syntax: make_dep
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	# Make dep
+	if [ ${KERNEL_FAMILY} == 2.4 ]; then
+		fname="Execute: make dep"
+		echo -n $fname
+		message_status 3 "working"
+		cd ${KERNEL_SOURCE}
+		make dep $MAKE_CPU_FLAG &> /dev/null
+		echo -en "\015"
+		echo -n $fname
+		message_status 1 "done"
+	fi
+
+}
+
+
+function make_mrproper ()
+{
+	# Execute make mrproper
+	# Syntax: make_mrproper
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	# Make dep
+	fname="Execute: make mrproper"
+	echo -n $fname
+	message_status 3 "working"
+	cd ${KERNEL_SOURCE}
+	make mrproper $MAKE_CPU_FLAG &> /dev/null 
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "done"
+
+}
+
+
+
+function read_and_change_version_file ()
+{
+	# Check version.h
+	# Syntax: read_and_change_version_file FILE_AS_STRING
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	dline_count=0
+	rm -rf ${TMP_DIR}/newversion.h
+	pure_kernel_version=`echo ${KERNEL_VERSION}`
+	pure_kernel_version=`echo $pure_kernel_version | cut -d '-' -f 1`
+
+	while read line  # For as many lines as the input file has...
+	do
+		line_count=`echo $line | grep -c "UTS_RELEASE"`
+		if [ $line_count != 0 ]; then
+			if [ $dline_count == 0 ]; then
+				version_count=`echo $line | grep -c "$pure_kernel_version"`
+				if [ $version_count == 1 ]; then
+				# Change line
+					echo "#define UTS_RELEASE \"${KERNEL_VERSION}\"" \
+						>> ${TMP_DIR}/newversion.h
+					dline_count=1
+				fi
+			fi
+		else
+			echo "$line" >> ${TMP_DIR}/newversion.h
+		fi
+	done
+
+	if [ $dline_count == 0 ]; then
+		header_check_failed
+	fi
+
+	cp ${TMP_DIR}/newversion.h ${KERNEL_HEADER}/linux/version.h
+}
+
+function generate_config ()
+{
+	# Check config file; Save old version and modify
+	# Syntax: generate_config
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	echo -n "Check sources for .config file"
+	echo 'while true; do echo -en "\012";done' &> ${TMP_DIR}/enter
+	chmod 755 ${TMP_DIR}/enter
+
+	if [ -f ${KERNEL_SOURCE}/.config ]; then
+	# Config file available
+		message_status 1 "${KERNEL_SOURCE}/.config"
+
+		if [ -f /proc/config.gz ]; then
+		# Current config file found
+			copy_proc_fs_config
+			return
+		fi
+
+		if [ -f ${KERNEL_MODULE_LOC}/$drv_name.o ]; then
+			# Driver already generated. Check config
+			rm -rf ${KERNEL_MODULE_LOC}/*.o
+			# Modversions not available. We have to regenerate the dep
+			check_config
+
+			# Regenerate the config file
+			rebuild_config_file
+
+			if [ `diff ${TMP_DIR}/config-backup ${KERNEL_SOURCE}/.config | wc -l` -gt 0 ]; then
+			# Create dependency
+				make_dep
+			fi
+			
+		else
+			if [ -f ${KERNEL_HEADER}/linux/version.h ] &&
+				[ -f ${KERNEL_SOURCE}/include/linux/autoconf.h ]; then
+				# Driver already generated. Check config
+					# Modversions not available. We have to regenerate the dep
+					check_config
+
+					# Regenerate the config file
+					rebuild_config_file
+					if [ `diff ${TMP_DIR}/config-backup ${KERNEL_SOURCE}/.config | wc -l` -gt 0 ]; then
+					# Create dependency
+						make_dep
+					fi
+			else
+			if [ -f ${KERNEL_MODULE_LOC}/.depend ] ||
+				[ -f ${KERNEL_MODULE_LOC}/.built-in.o.cmd ]; then
+				if [ -f ${KERNEL_HEADER}/linux/modversions.h ] || 
+					[ ${KERNEL_FAMILY} == 2.6 ]; then
+				# Modversions available. nothing to do
+					DONT_CLEANUP_TREE=1;
+				else
+					# Modversions not available. We have to regenerate the dep
+					check_config
+
+					# Regenerate the config file
+					rebuild_config_file
+
+					if [ `diff ${TMP_DIR}/config-backup ${KERNEL_SOURCE}/.config | wc -l` -gt 0 ]; then
+					# Create dependency
+						make_dep
+					fi
+				fi
+			else
+				# Change the config file
+				check_config
+
+				# Generate the config file
+				rebuild_config_file
+
+				# Create dependency
+				make_dep
+			fi
+			fi
+		fi
+	else
+	# Config file _not_ available
+		message_status 1 "none"
+
+		# Clean the distriubuted files	
+		make_mrproper
+
+		if [ -d ${KERNEL_SOURCE}/configs ]; then
+			echo -n "Config files found"
+			message_status 1 "${KERNEL_SOURCE}/configs/"
+
+			# restore old config file from an alternative place (RedHat)
+			copy_alternative_configs
+		fi
+
+		if [ -f /proc/config.gz ]; then
+			copy_proc_fs_config
+		fi
+
+		# Restore old version.h file
+		version_h_management 0
+
+		# Generate the config file (step 1)
+		generate_config_file
+
+		# Change the config file
+		cp ${KERNEL_SOURCE}/.config ${TMP_DIR}/config-bk2
+		check_config
+
+		if [ `diff ${TMP_DIR}/config-bk2 ${KERNEL_SOURCE}/.config | wc -l` -gt 0 ]; then
+			# Generate the config file (step 2)
+			rebuild_config_file	
+		fi
+
+		# Create dependency
+		make_dep
+	fi
+}
+
+
+function copy_proc_fs_config () {
+	# Restore old config file from /proc/ fs
+	# Syntax: copy_proc_fs_config
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	echo -n "Copying file from proc directory"
+	zcat /proc/config.gz &> ${KERNEL_SOURCE}/.config
+	message_status 1 "done"
+}
+
+
+function copy_alternative_configs ()
+{
+	# Restore old config file from an alternative place (RedHat)
+	# Syntax: copy_alternative_configs
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	echo -n "Copying file from config directory"
+	cpu_count=`cat /proc/cpuinfo | grep "cpu family" -c`
+
+	pure_kernel=`echo ${KERNEL_VERSION} | cut -d '-' -f 1`
+	mach_config="${KERNEL_SOURCE}/configs/kernel-$pure_kernel-$kernel_machine.config"
+
+	if [ -f $mach_config ]; then
+ 		if [ $cpu_count != 1 ]; then
+			if [ $cpu_count -gt 1 ]; then
+				mach_config="${KERNEL_SOURCE}/configs/kernel-$pure_kernel-$kernel_machine-smp.config"
+				cp $mach_config ${KERNEL_SOURCE}/.config
+				message_status 1 "done"
+			else
+				message_status 1 "file not found"
+			fi
+		else
+			cp $mach_config ${KERNEL_SOURCE}/.config
+			message_status 1 "done"
+		fi
+	else
+		message_status 1 "file not found"
+	fi
+}
+
+
+function generate_config_file ()
+{
+	# Generate a new .config file
+	# Syntax: generate_config_file
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	fname="Execute: make config"
+	echo -n $fname
+	message_status 3 "working"
+	cd ${KERNEL_SOURCE}
+	${TMP_DIR}/enter | make config $MAKE_CPU_FLAG &> /dev/null
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "done"
+
+}
+
+function rebuild_config_file ()
+{
+	# Rebuild the .config file
+	# Syntax: rebuild_config_file
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	fname="Execute: make oldconfig"
+	echo -n $fname
+	message_status 3 "working"
+	cd ${KERNEL_SOURCE}
+	make oldconfig $MAKE_CPU_FLAG &> /dev/null
+	returnvalue=$?
+	echo -en "\015"
+	echo -n $fname
+	message_status 1 "done"
+
+	if [ $returnvalue != 0 ]; then
+		echo -n "Delete old .config file"
+		rm -rf .config
+		message_status 1 "done"
+
+		fname="Execute: make oldconfig (step2)"
+		echo -n $fname
+		message_status 3 "working"
+		cd ${KERNEL_SOURCE}
+		${TMP_DIR}/enter | make oldconfig $MAKE_CPU_FLAG &> /dev/null
+		returnvalue=$?
+		echo -en "\015"
+		fname="Execute: make oldconfig"
+		echo -n $fname
+		message_status 1 "done"
+	fi
+}
+
+
+
+function version_h_management ()
+{
+	# Save or restore version.h file
+	# Syntax: version_h_management FLAG
+	#	FLAG:
+	#		1 == Save version.h
+	#		1 != Restore version.h
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	if [ $1 != 1 ]; then
+	# Restore version.h
+		if [ "$user_sel" == "installation" ]; then
+			if [ -e ${TMP_DIR}/version.h ]; then
+				echo -n "Restore old version.h"
+				cp ${TMP_DIR}/version.h ${KERNEL_HEADER}/linux/version.h
+				message_status 1 "done"
+			fi
+		fi
+	else
+	# Save old version.h file
+		if [ -f ${KERNEL_SOURCE}/include/linux/version.h ]; then
+			echo -n "Save old version.h file"
+			cp ${KERNEL_SOURCE}/include/linux/version.h ${TMP_DIR}/
+			message_status 1 "done"
+		fi
+	fi
+
+}
+
+function autoconf_h_management ()
+{
+	# Save or restore autoconf.h file
+	# Syntax: autoconf_h_management FLAG
+	#	FLAG:
+	#		1 == Save autoconf.h
+	#		1 != Restore autoconf.h
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	if [ $1 != 1 ]; then
+	# Restore autoconf.h
+		if [ "$user_sel" == "installation" ]; then
+			if [ -e ${TMP_DIR}/autoconf.h ]; then
+				echo -n "Restore old autoconf.h"
+				cp ${TMP_DIR}/autoconf.h ${KERNEL_HEADER}/linux/autoconf.h
+				message_status 1 "done"
+			fi
+		fi
+	else
+	# Save old autoconf.h file
+		if [ -f ${KERNEL_SOURCE}/include/linux/autoconf.h ]; then
+			echo -n "Save old autoconf.h file"
+			cp ${KERNEL_SOURCE}/include/linux/autoconf.h ${TMP_DIR}/
+			message_status 1 "done"
+		fi
+	fi
+
+}
+
+function dot_config_management ()
+{
+	# Save or restore config file 
+	# Syntax: dot_config_management FLAG
+	#	FLAG:
+	#		1 == Save .config
+	#		1 != Restore .config
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	if [ $1 != 1 ]; then
+	# Restore .config
+		if [ "$user_sel" == "installation" ]; then
+			if [ -e ${TMP_DIR}/config-backup ]; then
+				echo -n "Restore old .config"
+				cp ${TMP_DIR}/config-backup ${KERNEL_SOURCE}/.config
+				message_status 1 "done"
+			fi
+		fi
+	else
+	# Save old .config file
+		if [ -f ${KERNEL_SOURCE}/include/linux/autoconf.h ]; then
+			echo -n "Save old .config file"
+			cp ${KERNEL_SOURCE}/.config ${TMP_DIR}/config-backup
+			message_status 1 "done"
+		fi
+	fi
+
+}
+
+
+
+#################################################################
+# Cleanup functions
+#################################################################
+
+function cleanup_trap ()
+{
+	# Sig handling
+	# Syntax: cleanup_trap
+	#	FLAG:
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	cleanup
+	clean
+	exit 1
+	
+}
+
+function cleanup ()
+{
+	# Restore all files
+	# Syntax: cleanup
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	
+	# Restore version.h
+	version_h_management 0
+
+	# Restore old autoconf.h file
+	autoconf_h_management 0
+
+	if [ -e ${TMP_DIR}/config ]; then
+		if [ ${KERNEL_SOURCE} ]; then
+			cp ${TMP_DIR}/config ${KERNEL_SOURCE}/.config
+		fi
+	fi
+
+	return
+}
+
+function clean ()
+{
+        # Clean temp directory
+        # Syntax: clean
+        # Author: mlindner
+        # Returns:
+        #       N/A
+
+	echo -n "Delete temp directories"
+
+ 	cd $working_dir
+	if [ ${TMP_DIR} ]; then
+ 		rm -rf ${TMP_DIR}
+	else
+		rm -rf /tmp/Sk98I*
+	fi
+ 	rm -rf $drv_name.o
+	message_status 1 "done"
+
+	return
+}
+
+
+
+#################################################################
+# Alt driver management
+#################################################################
+
+function check_alt_driver ()
+{
+	# Check alternative driver avaibility
+	# Syntax: check_alt_driver
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	if [ `modinfo skge 2>&1 /dev/null | grep filename -c` != 0 ]; then
+		display_alt_info
+	fi
+
+	if [ `modinfo sky2 2>&1 /dev/null | grep filename -c` != 0 ]; then
+		if [ $ALT_OPTION_FLAG  == 0 ]; then
+		display_alt_info
+		fi
+	fi
+
+	if [ $ALT_OPTION == 1 ]; then
+		remove_alt_devices
+	fi
+	if [ $ALT_OPTION == 2 ]; then
+		remove_alt_devices
+	fi
+}
+
+
+function remove_alt_devices ()
+{
+	# Remove alternative devices
+	# Syntax: remove_old_devices
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+
+	echo -n "Disconnect alternative devices: "
+	for devices in `dmesg | grep sky2| grep eth |cut -d ':' -f1 | cut -d ' ' -f2`; do
+		ifconfig $devices down &> /dev/null
+	done
+
+	for devices in `dmesg | grep skge| grep eth |cut -d ':' -f1 | cut -d ' ' -f2`; do
+		ifconfig $devices down &> /dev/null
+	done
+	message_status 1 "done"
+
+	echo -n "Unload alternative driver"
+	rmmod skge &> /dev/null
+	rmmod sky2 &> /dev/null
+	message_status 1 "done"
+}
+
+function handle_alt_driver ()
+{
+	# Handle alternative driver
+	# Syntax: handle_alt_driver
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	if [ $ALT_OPTION_FLAG == 0 ]; then
+	# Nothing to do
+		return
+	fi
+
+	if [ $ALT_OPTION == 0 ]; then
+	# Option "Do nothing" selected
+		return
+	fi
+
+	if [ ! -e /etc/modprobe.conf ];then
+	# modprobe.conf not available - nothing to do
+		return
+	fi
+
+	# Change modinfo entries
+	echo -n "Change /etc/modprobe.conf"
+	local A="`echo | tr '\012' '\001' `"
+	local AFirst="skge"
+	local ALast="sk98lin"
+	sed -e "s$A$AFirst$A$ALast$A" \
+		/etc/modprobe.conf \
+		>> ${TMP_DIR}/modprobe.conf
+	local AFirst="sky2"
+	local ALast="sk98lin"
+	sed -e "s$A$AFirst$A$ALast$A" \
+		${TMP_DIR}/modprobe.conf \
+		>> ${TMP_DIR}/modprobe.conf2
+	cp ${TMP_DIR}/modprobe.conf2 /etc/modprobe.conf
+	message_status 1 "done"
+
+	if [ $ALT_OPTION == 1 ]; then
+		echo -n "Rename alternative driver"
+		mv ${ALT_MODULE_LOC}/skge.ko ${ALT_MODULE_LOC}/_skge.ko &> /dev/null
+		mv ${ALT_MODULE_LOC}/sky2.ko ${ALT_MODULE_LOC}/_sky2.ko &> /dev/null
+		message_status 1 "done"
+	fi
+
+	if [ $ALT_OPTION == 2 ]; then
+		echo -n "Delete alternative driver"
+		rm -rf ${ALT_MODULE_LOC}/skge.ko &> /dev/null
+		rm -rf ${ALT_MODULE_LOC}/sky2.ko &> /dev/null
+		message_status 1 "done"
+	fi
+}
+
+function display_alt_info ()
+{
+	# Display info page
+	# Syntax: display_alt_info
+	# Author: mlindner
+	# Returns:
+	#       N/A
+
+	clear
+	echo "IMPORTANT INFORMATION!"
+	echo ""
+	echo "We found an alternative driver for your Marvell product on this system."
+	echo "The alternative driver is _NOT_ directly supported by Marvell and does not"
+	echo "include all features provided by your device. If you want to use the"
+	echo "sk98lin driver developed by Marvell, you may choose either to deactivate"
+	echo "or remove the alternative driver."
+	echo ""
+	echo "[PRESS ANY KEY FOR FURTHER INSTRUCTIONS]"
+	
+	old_tty_settings=$(stty -g)		# Save old settings.
+	stty -icanon
+	Keypress=$(head -c1)
+	stty "$old_tty_settings"		# Restore old terminal settings.
+
+	clear
+	echo "Do nothing:"
+	echo "  - The sk98lin will be installed"
+	echo "  NOTE: It may happen that the alternative driver will be loaded on "
+	echo "  the next boot process. In this case the Marvell driver _WON'T_ be"
+	echo "  loaded."
+	echo ""
+	echo "Deactivate driver:"
+	echo "  - The alternative driver will be renamed to _skge.ko or _sky2.ko"
+	echo "  - All references in the /etc/modprobe.conf file will be changed to"
+	echo "    the sk98lin driver"
+	echo "  - The alternative driver will be unloaded"
+	echo "  - The sk98lin driver will be installed"
+	echo ""
+	echo "Remove driver (recommended):"
+	echo "  - The alternative driver will be removed from your system"
+	echo "  - All references in the /etc/modprobe.conf file will be changed to"
+	echo "    the sk98lin driver"
+	echo "  - The alternative driver will be unloaded"
+	echo "  - The sk98lin driver will be installed"
+
+	echo ""
+	echo ""
+	PS3='Action: ' # Sets the prompt string.
+	select user_sel in "Do nothing" "Deactivate diver" "Remove driver"
+	do
+		break  # if no 'break' here, keeps looping forever.
+	done
+
+	ALT_OPTION_FLAG=1
+	ALT_OPTION=0
+	if [ "$user_sel" == "Do nothing" ]; then
+		ALT_OPTION=0
+	fi
+	if [ "$user_sel" == "Deactivate diver" ]; then
+		ALT_OPTION=1
+	fi
+	if [ "$user_sel" == "Remove driver" ]; then
+		ALT_OPTION=2
+	fi
+	clear
+}
+
+#
+# Check functions
+#
+function print_comp_resources ()
+{
+	# Date and kernel version
+	echo -n "Check kernel version"
+	echo "Global:" > comp_resources
+	echo "=========" >> comp_resources
+	CDATE=$( date | awk '{printf $4" ("$3" "$2")\n"}')
+	echo "Date:               $CDATE" >> comp_resources
+	KVERSION=$( sed -n 's/^[^ ]* \([^ ]*\) \([^ ]*\) .*$/\2/p' /proc/version)
+	echo "Kernel version:     $KVERSION" >> comp_resources
+	message_status 1 "done"
+
+
+	# Driver version check
+	echo -n "Check driver info"
+	if [ -e /var/log/messages ]; then
+		DVERSION=$( tail -n 10000 /var/log/messages | grep sk98lin | \
+		awk '{printf $10"\n"}' | tail -n 1 - )
+		echo "Driver version:     $DVERSION" >> comp_resources
+	else
+		echo "Driver version:     not found" >> comp_resources
+	fi
+
+	# Last driver load
+	if [ -e /var/log/messages ]; then
+		DDATE=$( tail -n 10000 /var/log/messages | grep sk98lin | \
+		awk '{printf $3" ("$2" "$1")\n"}' | tail -n 1 - )
+		echo "Last driver usage:  $DDATE" >> comp_resources
+	else
+		echo "Last driver usage:  not found" >> comp_resources
+	fi
+
+	# Load as module?
+	if $( lsmod | grep -q "sk98lin"); then
+		echo "Load as module:     yes" >> comp_resources
+	else
+		echo "Load as module:     no" >> comp_resources
+	fi
+	message_status 1 "done"
+
+
+	# Devices check
+	echo -n "Check devices..."
+	PROCFILE=/proc/net/sk98lin
+	if [ -e $PROCFILE ]; then
+		echo "Dual port support:  yes" >> comp_resources
+
+		for i in 0 1 2 3 4 5 6 7 8 9; do
+			if [ -f $PROCFILE/eth$i ]; then
+				echo "Activated card:     eth$i" >> comp_resources
+			fi
+		done
+	else
+		echo "Dual port support:  no" >> comp_resources
+	fi
+	echo >> comp_resources
+	message_status 1 "done"
+
+	# Network resources
+	echo -n "Check network resources..."
+	echo "Window sizes:" >> comp_resources
+	echo "=========" >> comp_resources
+	echo >> comp_resources
+
+	WMEM=$( cat /proc/sys/net/core/wmem_max)
+	echo "     wmem_max:      $WMEM" >> comp_resources
+	WMEM=$( cat /proc/sys/net/core/wmem_default)
+	echo "     wmem_default:  $WMEM" >> comp_resources
+	WMEM=$( cat /proc/sys/net/core/rmem_max)
+	echo "     rmem_max:      $WMEM" >> comp_resources
+	WMEM=$( cat /proc/sys/net/core/rmem_default)
+	echo "     rmem_default:  $WMEM" >> comp_resources
+	message_status 1 "done"
+
+
+	echo -n "Check hardware resources..."
+	echo >> comp_resources
+	echo "Hardware:" >> comp_resources
+	echo "=========" >> comp_resources
+	echo >> comp_resources
+	message_status 1 "done"
+
+	echo -n "    CPU info"
+	echo "CPU:" >> comp_resources
+	echo "=========" >> comp_resources
+	cat /proc/cpuinfo >> comp_resources
+	echo >> comp_resources
+	message_status 1 "done"
+
+	echo -n "    Memory info"
+	echo "Momory:" >> comp_resources
+	echo "=========" >> comp_resources
+	free >> comp_resources
+	message_status 1 "done"
+
+	echo -n "    PCI info"
+	echo >> comp_resources
+	echo "PCI:" >> comp_resources
+	echo "=========" >> comp_resources
+	cat /proc/bus/pci/devices >> comp_resources
+	echo >> comp_resources
+
+	echo >> comp_resources
+	echo "lspci:" >> comp_resources
+	echo "=========" >> comp_resources
+	lspci >> comp_resources
+	echo >> comp_resources
+	message_status 1 "done"
+
+	echo -n "    IO-Ports info"
+	echo "IO-Ports:" >> comp_resources
+	echo "=========" >> comp_resources
+	cat /proc/ioports >> comp_resources
+	echo >> comp_resources
+	message_status 1 "done"
+
+
+	echo -n "    dmesg info"
+	echo "dmesg:" >> comp_resources
+	echo "=========" >> comp_resources
+	dmesg | tail -n 100 >> comp_resources
+	echo >> comp_resources
+	message_status 1 "done"
+
+	echo -n "    net/dev info"
+	echo "/proc/net/dev..." >> comp_resources
+	echo "==========================" >> comp_resources
+	cat /proc/net/dev >> comp_resources
+	echo >> comp_resources
+	message_status 1 "done"
+
+	echo -n "    ifconfig..."
+	echo "ifconfig:" >> comp_resources
+	echo "=========" >> comp_resources
+	ifconfig -a >> comp_resources
+	echo >> comp_resources
+	message_status 1 "done"
+
+	echo -n "Print sk98lin devices..."
+	echo "Print sk98lin devices..." >> comp_resources
+	echo "==========================" >> comp_resources
+	echo >> comp_resources
+
+	for i in 0 1 2 3 4 5 6 7 8 9; do
+		if [ -f $PROCFILE/eth$i ]; then
+			cat $PROCFILE/eth$i >> comp_resources
+		fi
+	done
+	message_status 1 "done"
+
+	echo -n "Generate install.log..."
+	echo "Driver install.log..." >> comp_resources
+	echo "==========================" >> comp_resources
+	echo >> comp_resources
+
+
+	if [ -f install.log ]; then
+		cat install.log >> comp_resources
+	fi
+	echo >> comp_resources
+	message_status 1 "done"
+
+}
