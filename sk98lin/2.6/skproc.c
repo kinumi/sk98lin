@@ -466,7 +466,7 @@ static int sk_proc_open(
 struct inode *inode,  /* the inode of the file   */
 struct file  *file)   /* the file pointer itself */
 {
-	return single_open(file, sk_seq_show, PDE(inode)->data);
+	return single_open(file, sk_seq_show, PDE_DATA(inode));
 }
 
 /*******************************************************************************

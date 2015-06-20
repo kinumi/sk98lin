@@ -29,7 +29,7 @@
  *
  *****************************************************************************/
 
-static struct pci_device_id sk98lin_pci_tbl[] __devinitdata = {
+static struct pci_device_id sk98lin_pci_tbl[] = {
 	/*    1 */
 	{ 0x1148, 0x4320, /* Generic SysKonnect SK-98xx V2.0 Gigabit Ethernet Adapter */
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0UL },

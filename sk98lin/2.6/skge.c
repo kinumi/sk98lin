@@ -109,7 +109,7 @@
  *
  ******************************************************************************/
 
-static int 	__devinit sk98lin_init_device(struct pci_dev *pdev, const struct pci_device_id *ent);
+static int 	sk98lin_init_device(struct pci_dev *pdev, const struct pci_device_id *ent);
 static void 	sk98lin_remove_device(struct pci_dev *pdev);
 #ifdef CONFIG_PM
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,10)
@@ -389,7 +389,7 @@ static struct pci_driver sk98lin_driver = {
 	.name		= DRIVER_FILE_NAME,
 	.id_table	= sk98lin_pci_tbl,
 	.probe		= sk98lin_init_device,
-	.remove		= __devexit_p(sk98lin_remove_device),
+	.remove		= sk98lin_remove_device,
 #ifdef CONFIG_PM
 	.suspend	= sk98lin_suspend,
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,11)
@@ -446,7 +446,7 @@ static const struct net_device_ops skge_netdev_ops = {
  *	0, if everything is ok
  *	!=0, on error
  */
-static int __devinit sk98lin_init_device(struct pci_dev *pdev,
+static int sk98lin_init_device(struct pci_dev *pdev,
 				  const struct pci_device_id *ent)
 
 {
@@ -547,7 +547,7 @@ static int __devinit sk98lin_init_device(struct pci_dev *pdev,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
 	SET_MODULE_OWNER(dev);
 #endif
-	SET_ETHTOOL_OPS(dev, &sk98lin_ethtool_ops);
+	dev->ethtool_ops = &sk98lin_ethtool_ops;
 
 	pAC->Index = sk98lin_boards_found;
 
@@ -614,7 +614,7 @@ static int __devinit sk98lin_init_device(struct pci_dev *pdev,
 
 #ifdef USE_SK_VLAN_SUPPORT
 	if (pAC->GIni.GIChipId >= CHIP_ID_YUKON_SUPR) {
-		dev->features |= NETIF_F_HW_VLAN_TX | NETIF_F_HW_VLAN_RX;
+		dev->features |= NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX;
 	}
 #endif
 
@@ -773,7 +773,7 @@ static int __devinit sk98lin_init_device(struct pci_dev *pdev,
 #endif
 		}
 
-		SET_ETHTOOL_OPS(dev, &sk98lin_ethtool_ops);
+		dev->ethtool_ops = &sk98lin_ethtool_ops;
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,28)
 		if (CHIP_ID_YUKON_2(pAC)) {
@@ -2167,7 +2167,7 @@ static void SkSetRssSupport(SK_AC *pAC, int Port)
  *	0, if everything is ok
  *	!=0, on error
  */
-static int __devinit SkGeBoardInit(struct SK_NET_DEVICE *dev, SK_AC *pAC)
+static int SkGeBoardInit(struct SK_NET_DEVICE *dev, SK_AC *pAC)
 {
 	short	i;
 	char	*DescrString = "sk98lin: Driver for Linux"; /* this is given to PNMI */

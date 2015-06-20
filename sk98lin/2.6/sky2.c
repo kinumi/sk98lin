@@ -1983,7 +1983,7 @@ SK_U32  ExtremeCsumResult)
 
 #ifdef USE_SK_VLAN_SUPPORT
 		if (FrameStatus & GMR_FS_VLAN) {
-			__vlan_hwaccel_put_tag(pMsg, be16_to_cpu(Vlan));
+			__vlan_hwaccel_put_tag(pMsg, htons(ETH_P_8021Q), be16_to_cpu(Vlan));
 		}
 #endif
 
@@ -2020,7 +2020,7 @@ SK_U32  ExtremeCsumResult)
 			pMsg->protocol = eth_type_trans(pMsg,
 				pAC->dev[Port]);
 #ifdef USE_SK_RSS_SUPPORT
-			pMsg->rxhash = le32_to_cpu(pAC->StatusLETable.Bmu.Stat.RssHashValue);
+			pMsg->hash = le32_to_cpu(pAC->StatusLETable.Bmu.Stat.RssHashValue);
 #endif
 
 #ifdef CONFIG_SK98LIN_NAPI
