@@ -39,7 +39,9 @@ $ sudo apt-get install git build-essential linux-headers-`uname -r`
 ```bash:command
 $ cd /tmp
 $ git clone git clone https://github.com/kinumi/sk98lin.git
-$ cd sk98lin
+$ cd sk98lin/sk98lin
+$ tar xvfj ../sk98lin.tar.bz2 *
+$ cd ..
 $ sudo -s
 # export IGNORE_SKAVAIL_CHECK=1
 # bash install.sh -m
